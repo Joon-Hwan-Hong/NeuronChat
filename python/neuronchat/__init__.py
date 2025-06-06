@@ -5,9 +5,12 @@ from .core import (
     net_aggregation,
     computeNetSimilarityPairwise_Neuron,
 )
+from .db import load_interactionDB, update_interactionDB
 
 __all__ = [
     "NeuronChat",
     "net_aggregation",
     "computeNetSimilarityPairwise_Neuron",
+    "load_interactionDB",
+    "update_interactionDB",
 ]

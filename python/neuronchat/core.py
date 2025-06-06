@@ -162,25 +162,124 @@ class NeuronChat:
         self.ligand_abundance = ligand_abundance_all
         self.target_abundance = target_abundance_all
 
-    def net_aggregation(self) -> None:
-        """Aggregate network strengths. Placeholder implementation."""
-        if not self.net:
-            return
-        self.net_analysis["aggregate"] = sum(np.sum(n) for n in self.net)
 
-    def computeNetSimilarityPairwise_Neuron(self) -> np.ndarray:
-        """Return pairwise similarity across nets. Placeholder."""
-        if not self.net:
-            return np.empty((0, 0))
-        n = len(self.net)
-        sim = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                if i <= j:
-                    s = np.corrcoef(self.net[i].ravel(), self.net[j].ravel())[0, 1]
-                    sim[i, j] = sim[j, i] = s
-        return sim
+def net_aggregation(
+    net_list: List[np.ndarray],
+    method: str = "weight",
+    cut_off: float = 0.05,
+) -> np.ndarray:
+    """Aggregate a list of communication networks."""
 
+    if len(net_list) == 0:
+        return np.empty((0, 0))
+
+    method = method.lower()
+    net_agg = np.zeros_like(net_list[0], dtype=float)
+
+    for mat in net_list:
+        mat = np.asarray(mat, dtype=float)
+        if method == "weighted_count":
+            net_agg += mat.sum() * (mat > 0)
+        elif method == "count":
+            net_agg += (mat > 0).astype(float)
+        elif method == "weighted_count2":
+            thresh = np.quantile(mat, cut_off)
+            denom = 1e-6 + (mat > thresh).sum()
+            net_agg += mat.sum() / denom * (mat > thresh)
+        elif method == "weight_threshold":
+            thresh = np.quantile(mat, cut_off)
+            net_agg += mat * (mat > thresh)
+        else:  # "weight"
+            net_agg += mat
+
+    return net_agg
+
+
+def computeNetSimilarityPairwise_Neuron(
+    obj: "NeuronChat",
+    slot_name: str = "net",
+    type: str = "functional",
+    comparison: Optional[List[int]] = None,
+    k: Optional[int] = None,
+    thresh: Optional[float] = None,
+) -> np.ndarray:
+    """Compute signaling network similarity for any pair of datasets."""
+
+    nets = getattr(obj, slot_name, None)
+    if nets is None or len(nets) == 0:
+        return np.empty((0, 0))
+
+    if comparison is None:
+        if "datasets" in obj.meta:
+            comparison = list(range(len(obj.meta["datasets"].unique())))
+        else:
+            comparison = list(range(len(nets)))
+
+    net_arrays: List[np.ndarray] = []
+    for idx in comparison:
+        arr = np.stack(nets[idx], axis=2) if isinstance(nets[idx], list) else np.asarray(nets[idx])
+        net_arrays.append(arr)
+
+    net_dims = [arr.shape[2] for arr in net_arrays]
+    nnet = sum(net_dims)
+    pos = np.cumsum([0] + net_dims)
+
+    if k is None:
+        k = int(np.ceil(np.sqrt(nnet))) + (1 if nnet > 25 else 0)
+
+    if thresh is not None:
+        for i, arr in enumerate(net_arrays):
+            nz = arr[arr != 0]
+            if nz.size > 0:
+                q = np.quantile(nz, thresh)
+                arr[arr < q] = 0
+            net_arrays[i] = arr
+
+    S_signalings = np.zeros((nnet, nnet), dtype=float)
+
+    def _get_slice(index: int) -> np.ndarray:
+        ds_idx = next(j for j, p in enumerate(pos[1:], start=1) if index < p) - 1
+        offset = index - pos[ds_idx]
+        return net_arrays[ds_idx][:, :, offset]
+
+    type = type.lower()
+    for i in range(nnet):
+        Gi = (_get_slice(i) > 0).astype(float)
+        for j in range(nnet):
+            Gj = (_get_slice(j) > 0).astype(float)
+            inter = np.logical_and(Gi, Gj).sum()
+            union = np.logical_or(Gi, Gj).sum()
+            if type == "structural":
+                val = inter / union if union > 0 else 0.0
+                S_signalings[i, j] = val
+            else:
+                S_signalings[i, j] = inter / union if union > 0 else 0.0
+
+    S_signalings[np.isnan(S_signalings)] = 0
+    np.fill_diagonal(S_signalings, 1)
+
+    SNN = _build_snn(S_signalings, k=k)
+    Similarity = S_signalings * SNN
+
+    obj.net_analysis.setdefault("similarity", {}).setdefault(type, {})["matrix"] = Similarity
+    return Similarity
+
+
+def _build_snn(sim: np.ndarray, k: int, prune: float = 1 / 15) -> np.ndarray:
+    """Construct a simple shared nearest neighbor matrix."""
+
+    n = sim.shape[0]
+    ranks = np.argsort(-sim, axis=1)
+    neigh = ranks[:, 1 : k + 1]
+    snn = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in neigh[i]:
+            shared = np.intersect1d(neigh[i], neigh[j]).size
+            weight = shared / k
+            if weight >= prune:
+                snn[i, j] = snn[j, i] = weight
+    np.fill_diagonal(snn, 1)
+    return snn
 
 def _cal_expr_by_group(df: pd.DataFrame, gene_used: List[str], mean_method: Optional[str] = None) -> pd.DataFrame:
     """Aggregate expression by cell group."""

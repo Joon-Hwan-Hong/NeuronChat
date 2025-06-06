@@ -1,4 +1,29 @@
-"""Interaction database utilities."""
+"""Interaction database utilities.
+
+The Python API expects interaction databases to be provided as JSON files.  A
+database is a mapping from the interaction name to an object with the
+following keys::
+
+    {
+        "interaction_name": str,
+        "lig_contributor": [str, ...],
+        "receptor_subunit": [str, ...],
+        "lig_contributor_group": [int, ...],
+        "lig_contributor_coeff": [float, ...],
+        "receptor_subunit_group": [int, ...],
+        "receptor_subunit_coeff": [float, ...],
+        "targets_up": [str, ...],
+        "targets_down": [str, ...],
+        "activator": [str, ...],
+        "inhibitor": [str, ...],
+        "interactors": [str, ...],
+        "interaction_type": str,
+        "ligand_type": str,
+    }
+
+The ``scripts/convert_rda.py`` helper converts the ``.rda`` databases shipped
+with the R package into this JSON structure.
+"""
 
 from __future__ import annotations
 

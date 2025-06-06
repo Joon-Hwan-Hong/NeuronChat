@@ -85,5 +85,19 @@ Here are some instructions in case users might encounter issues during installat
 - Install [ComplexHeatmap](https://github.com/jokergoo/ComplexHeatmap) using `devtools::install_github("jokergoo/ComplexHeatmap")`. 
 - Install [circlize](https://github.com/jokergoo/circlize) using `devtools::install_github("jokergoo/circlize")`. 
 - Please see the instructions for installation of `Seurat` or `SeuratObject` via the link [Seurat](https://satijalab.org/seurat/articles/install.html) or [SeuratObject](https://github.com/mojaveazure/seurat-object).
+
+## Interaction databases in Python
+
+The Python package expects interaction databases in a simple JSON or pickle
+format. Each interaction is stored under its name and contains the fields listed
+in ``neuronchat.db``.  To create such files from the ``.rda`` databases
+distributed with the R package, use the helper script ``scripts/convert_rda.py``.
+
+Example::
+
+    python scripts/convert_rda.py data/interactionDB_mouse.rda interactionDB_mouse.json
+
+The resulting JSON file can be loaded with :func:`neuronchat.load_interactionDB`.
   
  
+

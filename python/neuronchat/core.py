@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable
 
 import numpy as np
 import pandas as pd
@@ -265,6 +265,54 @@ def computeNetSimilarityPairwise_Neuron(
     return Similarity
 
 
+def computeNetSimilarity_Neuron(
+    obj: "NeuronChat",
+    slot_name: str = "net",
+    type: str = "functional",
+    k: Optional[int] = None,
+    thresh: Optional[float] = None,
+) -> np.ndarray:
+    """Compute signaling network similarity within a dataset."""
+
+    prob_list = getattr(obj, slot_name, None)
+    if prob_list is None or len(prob_list) == 0:
+        return np.empty((0, 0))
+
+    prob = np.stack(prob_list, axis=2)
+
+    nnet = prob.shape[2]
+    if k is None:
+        k = int(np.ceil(np.sqrt(nnet))) + (1 if nnet > 25 else 0)
+
+    if thresh is not None:
+        nz = prob[prob != 0]
+        if nz.size > 0:
+            q = np.quantile(nz, thresh)
+            prob[prob < q] = 0
+
+    type = type.lower()
+    S_signalings = np.zeros((nnet, nnet), dtype=float)
+    for i in range(nnet - 1):
+        Gi = (prob[:, :, i] > 0).astype(float)
+        for j in range(i + 1, nnet):
+            Gj = (prob[:, :, j] > 0).astype(float)
+            inter = np.logical_and(Gi, Gj).sum()
+            union = np.logical_or(Gi, Gj).sum()
+            val = inter / union if union > 0 else 0.0
+            S_signalings[i, j] = val
+            S_signalings[j, i] = val
+
+    np.fill_diagonal(S_signalings, 1)
+
+    SNN = _build_snn(S_signalings, k=k)
+    Similarity = S_signalings * SNN
+
+    obj.net_analysis.setdefault("similarity", {}).setdefault(type, {})[
+        "matrix"
+    ] = Similarity
+    return Similarity
+
+
 def _build_snn(sim: np.ndarray, k: int, prune: float = 1 / 15) -> np.ndarray:
     """Construct a simple shared nearest neighbor matrix."""
 
@@ -514,3 +562,116 @@ def neuron_chat_downstream(
         "ligand.abundance": my_list["ligand_score"],
         "target.abundance": my_list["receptor_score"],
     }
+
+
+def selectK_Neuron(
+    obj: "NeuronChat",
+    slot_name: str = "net",
+    pattern: str = "outgoing",
+    k_range: Iterable[int] = range(2, 10),
+    nrun: int = 10,
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """Estimate a suitable number of communication patterns via NMF."""
+
+    from sklearn.decomposition import NMF
+
+    prob = np.stack(getattr(obj, slot_name), axis=2)
+    if pattern == "outgoing":
+        data = prob.sum(axis=1)
+    else:
+        data = prob.sum(axis=0)
+    data = data / np.maximum(data.max(axis=0), 1e-6)
+    data = data[data.sum(axis=1) != 0]
+
+    results = []
+    for k in k_range:
+        errs = []
+        for _ in range(nrun):
+            model = NMF(n_components=k, init="nndsvda", max_iter=300, random_state=random_state)
+            model.fit(data)
+            errs.append(model.reconstruction_err_)
+        results.append({"k": k, "reconstruction_err": np.mean(errs)})
+    return pd.DataFrame(results)
+
+
+def identifyCommunicationPatterns_Neuron(
+    obj: "NeuronChat",
+    slot_name: str = "net",
+    pattern: str = "outgoing",
+    k: int | None = None,
+    k_range: Iterable[int] = range(2, 10),
+    random_state: int = 0,
+) -> "NeuronChat":
+    """Identify communication patterns by performing NMF."""
+
+    from sklearn.decomposition import NMF
+
+    if k is None:
+        df = selectK_Neuron(obj, slot_name=slot_name, pattern=pattern, k_range=k_range)
+        k = int(df.loc[df["reconstruction_err"].idxmin(), "k"])
+
+    prob = np.stack(getattr(obj, slot_name), axis=2)
+    if pattern == "outgoing":
+        data = prob.sum(axis=1)
+    else:
+        data = prob.sum(axis=0)
+    data = data / np.maximum(data.max(axis=0), 1e-6)
+    data = data[(data.sum(axis=1) != 0)][:, (data.sum(axis=0) != 0)]
+
+    model = NMF(n_components=k, init="nndsvda", max_iter=300, random_state=random_state)
+    W = model.fit_transform(data)
+    H = model.components_
+
+    W = W / (W.sum(axis=1, keepdims=True) + 1e-8)
+    H = H / (H.sum(axis=0, keepdims=True) + 1e-8)
+
+    df_W = pd.DataFrame(
+        W,
+        index=[f"cell_{i}" for i in range(W.shape[0])],
+        columns=[f"Pattern {i+1}" for i in range(W.shape[1])],
+    )
+    df_H = pd.DataFrame(
+        H,
+        index=[f"Pattern {i+1}" for i in range(H.shape[0])],
+        columns=[f"signal_{i}" for i in range(H.shape[1])],
+    )
+
+    obj.net_analysis.setdefault("pattern", {})[pattern] = {
+        "data": data,
+        "pattern": {"cell": df_W, "signaling": df_H},
+    }
+    return obj
+
+
+def rankNet_Neuron(
+    obj: "NeuronChat",
+    slot_name: str = "net",
+    measure: str = "weight",
+) -> pd.DataFrame:
+    """Rank signaling pathways by overall information flow."""
+
+    prob = np.stack(getattr(obj, slot_name), axis=2)
+    if measure == "count":
+        scores = (prob > 0).sum(axis=(0, 1))
+    else:
+        scores = prob.sum(axis=(0, 1))
+    df = pd.DataFrame({"name": obj.LR or range(prob.shape[2]), "contribution": scores})
+    df.sort_values("contribution", ascending=False, inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+
+def compareInteractions_Neuron(
+    obj: "NeuronChat",
+    measure: str = "count",
+    digits: int = 3,
+) -> pd.DataFrame:
+    """Summarize the total number or weight of interactions."""
+
+    if measure == "count":
+        counts = [np.stack(nets, axis=2).astype(bool).sum() for nets in obj.net]
+    else:
+        counts = [np.stack(nets, axis=2).sum() for nets in obj.net]
+    df = pd.DataFrame({"dataset": range(len(counts)), "count": np.round(counts, digits)})
+    return df

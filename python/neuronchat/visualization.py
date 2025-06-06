@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional, Any
+
+from sklearn.decomposition import PCA
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch
@@ -14,6 +16,8 @@ __all__ = [
     "sc_palette",
     "netVisual_circle_neuron",
     "heatmap_single",
+    "netVisual_embedding_Neuron",
+    "netVisual_embeddingPairwise_Neuron",
 ]
 
 
@@ -196,5 +200,67 @@ def heatmap_single(
         ax_right.set_xlabel("Ligand abundance")
         ax_right.set_ylabel("")
 
+    return ax
+
+
+def _embedding(similarity: np.ndarray) -> np.ndarray:
+    """Reduce similarity matrix to 2D via PCA."""
+
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(similarity)
+    return coords
+
+
+def netVisual_embedding_Neuron(
+    obj: Any,
+    *,
+    type: str = "functional",
+    ax: Optional[plt.Axes] = None,
+) -> plt.Axes:
+    """Plot a 2D embedding of pathway similarities for a single dataset."""
+
+    sim = obj.net_analysis.get("similarity", {}).get(type, {}).get("matrix")
+    if sim is None:
+        raise ValueError("Similarity matrix not found; run computeNetSimilarity_Neuron first")
+
+    coords = _embedding(sim)
+    sizes = np.array([mat.sum() for mat in getattr(obj, "net")])
+    labels = getattr(obj, "LR", list(range(sim.shape[0])))
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    sc = ax.scatter(coords[:, 0], coords[:, 1], s=20 + sizes / sizes.max() * 80, c="steelblue")
+    for x, y, lab in zip(coords[:, 0], coords[:, 1], labels):
+        ax.text(x, y, str(lab), fontsize=8)
+    ax.set_xlabel("Dim 1")
+    ax.set_ylabel("Dim 2")
+    return ax
+
+
+def netVisual_embeddingPairwise_Neuron(
+    obj: Any,
+    *,
+    type: str = "functional",
+    comparison: Optional[list[int]] = None,
+    ax: Optional[plt.Axes] = None,
+) -> plt.Axes:
+    """Plot embedding for similarity between multiple datasets."""
+
+    sim = obj.net_analysis.get("similarity", {}).get(type, {}).get("matrix")
+    if sim is None:
+        raise ValueError("Similarity matrix not found; run computeNetSimilarityPairwise_Neuron first")
+
+    coords = _embedding(sim)
+    labels = list(range(sim.shape[0]))
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    ax.scatter(coords[:, 0], coords[:, 1], c="steelblue", s=30)
+    for x, y, lab in zip(coords[:, 0], coords[:, 1], labels):
+        ax.text(x, y, str(lab), fontsize=8)
+    ax.set_xlabel("Dim 1")
+    ax.set_ylabel("Dim 2")
     return ax
 
